@@ -328,6 +328,10 @@ def build_investigator_prompt(input_data, user_message: str):
     context_parts = []
     content_blocks = []
 
+    # Bedrock max document size is 4.5 MB
+    MAX_DOCUMENT_SIZE_MB = 4.5
+    MAX_DOCUMENT_SIZE_BYTES = int(MAX_DOCUMENT_SIZE_MB * 1024 * 1024)
+
     if isinstance(state_dict, dict):
         if state_dict.get("uploadedFile"):
             file_info = state_dict["uploadedFile"]
@@ -337,23 +341,35 @@ def build_investigator_prompt(input_data, user_message: str):
             if base64_data:
                 try:
                     pdf_bytes = base64.b64decode(base64_data)
-                    # Sanitize filename for Bedrock API requirements
-                    # Append unique suffix to avoid "duplicate document names" error
-                    # when same PDF is sent across multiple messages in conversation
-                    safe_name = _sanitize_document_name(file_name)
-                    unique_name = f"{safe_name}-{uuid.uuid4().hex[:8]}"
-                    content_blocks.append(
-                        {
-                            "document": {
-                                "format": "pdf",
-                                "name": unique_name,
-                                "source": {"bytes": pdf_bytes},
-                            },
-                        }
-                    )
-                    context_parts.append(f"Uploaded file: {file_name}")
-                except Exception:
-                    context_parts.append(f"Uploaded file: {file_name} (decode error)")
+                    file_size_mb = len(pdf_bytes) / (1024 * 1024)
+
+                    # Check file size before sending to Bedrock
+                    if len(pdf_bytes) > MAX_DOCUMENT_SIZE_BYTES:
+                        logger.warning(f"PDF too large: {file_size_mb:.1f}MB (max {MAX_DOCUMENT_SIZE_MB}MB)")
+                        context_parts.append(
+                            f"ERROR: The uploaded file '{file_name}' is {file_size_mb:.1f}MB, "
+                            f"which exceeds Bedrock's {MAX_DOCUMENT_SIZE_MB}MB limit. "
+                            "Please upload a smaller PDF file."
+                        )
+                    else:
+                        # Sanitize filename for Bedrock API requirements
+                        # Append unique suffix to avoid "duplicate document names" error
+                        # when same PDF is sent across multiple messages in conversation
+                        safe_name = _sanitize_document_name(file_name)
+                        unique_name = f"{safe_name}-{uuid.uuid4().hex[:8]}"
+                        content_blocks.append(
+                            {
+                                "document": {
+                                    "format": "pdf",
+                                    "name": unique_name,
+                                    "source": {"bytes": pdf_bytes},
+                                },
+                            }
+                        )
+                        context_parts.append(f"Uploaded file: {file_name} ({file_size_mb:.1f}MB)")
+                except Exception as e:
+                    logger.error(f"Failed to decode PDF: {e}")
+                    context_parts.append(f"Uploaded file: {file_name} (decode error: {e})")
 
         status = state_dict.get("analysisStatus", "idle")
         context_parts.append(f"Analysis status: {status}")
